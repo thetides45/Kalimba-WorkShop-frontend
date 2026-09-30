@@ -1,0 +1,25 @@
+{
+  "name": "kalimba-workshop-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "卡林巴社区工坊前端：社区门户 + 制谱内核 + 离线打包",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "kernel:extract": "node tools/extract_kernel.js",
+    "workbench:extract": "node tools/extract_workbench.js",
+    "offline:build": "node tools/build_offline.js",
+    "offline:verify": "node tools/verify_offline.js"
+  },
+  "dependencies": {
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^5.4.11"
+  }
+}
