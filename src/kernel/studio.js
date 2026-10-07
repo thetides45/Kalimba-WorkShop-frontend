@@ -882,8 +882,8 @@ function init(){
   rebuild();
   syncEditUI();          // 初始为「未编辑」：时值按钮整组灰掉、不可点
 }
-/* ★ P1：顶层 `init();` 已移出本模块（见 index.js 的 mountStudio / 离线产物末尾）。
-   否则任何 import 到本模块的代码（例如 SPA 只用 renderer）都会在加载时就去摸工作台 DOM。 */
+/* ★ P1：顶层 `init();` 已移出本模块（见离线产物末尾的显式 init() 调用）。
+   否则任何 import 到本模块的代码（例如只用 renderer 的调用方）都会在加载时就去摸工作台 DOM。 */
 
 /* ─────────────── 本模块对外出口 ─────────────── */
 export { SAMPLE, SAMPLE_XML, SVG_CH_ADD, SVG_CH_DEL, applyAttach, applyImported, applyMetaOpts, applyMidiChannels, attachFillTitle, attachTimer, autoFit, currentTuning, exportOpts, exportPng, guardRebuild, handleMidiFile, handleXmlFile, inflateRaw, init, midiChNameCount, midiChOptText, midiChOptionsHTML, midiChSelEls, midiChTaken, midiChsPicked, onBpmInput, pngName, populateMidiChannels, printScore, rebuild, redrawForAttach, refreshMidiChOptions, renderMidiChRows, seg, segSet, setMetaLine, setPagedLayout, setTempo, syncBpm, syncEditUI, syncMidiChRows, syncMidiChSelTitles, toggleAttach, unzipMxl, zipName };

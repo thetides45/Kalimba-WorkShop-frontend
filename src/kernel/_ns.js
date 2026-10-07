@@ -18,5 +18,5 @@ export const KERNEL_LAYERS = [
   { id: 'editor', desc: '点选编辑' },
   { id: 'player', desc: 'Web Audio 试听' },
   { id: 'exporter', desc: '导出与打包' },
-  { id: 'studio', desc: '工作台装配（含 DOM 接线，SPA 门户不使用）' }
+  { id: 'studio', desc: '工作台装配（含 DOM 接线，仅离线单文件产物使用）' }
 ];

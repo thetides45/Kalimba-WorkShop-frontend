@@ -145,9 +145,13 @@ details.spec.spec-sub{border:1px dashed var(--line); background:transparent; mar
 .toolbar .seg.off button{cursor:not-allowed}
 .toolbar .seg.off button.on{background:#f2f2ee; color:var(--ink3)}
 .toolbar label.tog{display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink2); cursor:pointer; user-select:none}
-/* 「附加设置」按钮要落在「分页预览」的**正下方**（用户 2026-09-17）：
-   把这两个包进一个纵向 flex，按钮就永远贴在它下面，不受工具条其它元素影响。 */
-.toolbar .togCol{display:flex; flex-direction:column; align-items:flex-start; gap:5px}
+/* 「附加设置」**单独占一行**（用户 2026-09-30，推翻 2026-09-17 的「贴在分页预览正下方」）：
+   工具条是 align-items:center 的 flex —— 一个两行高的列会把「简谱对照」「深色长条」
+   顶到该列的中线上、按钮又压在复选框正下方，整块看着像挤成一团。
+   改成 flex-basis:100% 的整行：它必定换行，与「分页预览」不再同列。
+   ★ 2026-09-30 追加：按钮**右对齐**（justify-content:flex-end）—— 与上一行末尾的
+     「分页预览」/ 状态徽标同在工具条右缘这一条视觉线上，不左不右地吊在中间。 */
+.toolbar .togRow{flex:1 1 100%; display:flex; align-items:center; justify-content:flex-end; gap:10px}
 .toolbar .spacer{flex:1}
 .stage{
   background:#fff; border:1px solid var(--line); border-radius:12px; padding:14px;
@@ -156,7 +160,7 @@ details.spec.spec-sub{border:1px dashed var(--line); background:transparent; mar
      （.stageWrap 与 #attach），而 .stage 是 .stageWrap 里的普通块。
      预览比侧栏高时看不出来（侧栏被拉平），**一旦侧栏比预览高（短谱 / 空谱）就不跟了**
      —— 1440 视口下实测差 53.8px。配上两边共用的 max-height，任何情况都等高。 */
-  height:100%; overflow:auto; max-height:calc(100vh - 190px);
+  height:100%; overflow:auto; max-height:calc(100vh - 209px);
 }
 .stage.edit-mode{border-color:#bcd9d1; box-shadow:inset 0 0 0 1px #e4f1ec}
 #svgHost svg{display:block}
@@ -244,7 +248,9 @@ details.spec.spec-sub{border:1px dashed var(--line); background:transparent; mar
 #attach{
   flex:0 0 224px; display:none; flex-direction:column; min-width:0;
   background:var(--panel); border:1px solid var(--line); border-radius:12px;
-  max-height:calc(100vh - 190px);      /* 与 .stage 同一个上限 → 两者永远等高 */
+  max-height:calc(100vh - 209px);      /* 与 .stage 同一个上限 → 两者永远等高
+                                          （2026-09-30：「附加设置」另起一行后工具条高了 19px，
+                                            190 → 209 把这块高度预算配平，预览区下沿仍在视口内） */
   overflow:hidden;                      /* 圆角要裁住内部滚动区，否则滚动时方角会戳出来 */
 }
 #attach.on{display:flex}
@@ -483,11 +489,11 @@ details.spec.spec-sub{border:1px dashed var(--line); background:transparent; mar
       <div class="spacer"></div>
       <label class="tog"><input type="checkbox" id="optDegree"> 简谱对照</label>
       <label class="tog"><input type="checkbox" id="optMark" checked> 深色长条</label>
-      <div class="togCol">
-        <label class="tog" title="仅用于预览打印时的分页位置；导出与打印始终按页分段"><input type="checkbox" id="optPaged"> 分页预览</label>
+      <label class="tog" title="仅用于预览打印时的分页位置；导出与打印始终按页分段"><input type="checkbox" id="optPaged"> 分页预览</label>
+      <span class="badge" id="stat"></span>
+      <div class="togRow">
         <button class="btn" id="btnAttach" title="标题 / 作者进每页页眉；作者链接生成二维码、附加信息竖排 —— 二者与「读谱方向」「logo 占位」一起排在每页右侧的信息栏里。改动只在「分页预览」下看得见版式效果">附加设置</button>
       </div>
-      <span class="badge" id="stat"></span>
     </div>
     <div class="workRow">
       <div class="stageWrap">
@@ -4814,8 +4820,8 @@ function init(){
   rebuild();
   syncEditUI();          // 初始为「未编辑」：时值按钮整组灰掉、不可点
 }
-/* ★ P1：顶层 `init();` 已移出本模块（见 index.js 的 mountStudio / 离线产物末尾）。
-   否则任何 import 到本模块的代码（例如 SPA 只用 renderer）都会在加载时就去摸工作台 DOM。 */
+/* ★ P1：顶层 `init();` 已移出本模块（见离线产物末尾的显式 init() 调用）。
+   否则任何 import 到本模块的代码（例如只用 renderer 的调用方）都会在加载时就去摸工作台 DOM。 */
 
 /* ─────────────── 本模块对外出口 ─────────────── */
 
