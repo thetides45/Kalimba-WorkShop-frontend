@@ -5,13 +5,15 @@
      kalimba-tab/index.html              唯一真源（单文件，手写）
        └─[extract_kernel]→ src/kernel/*.js
             └─[build_offline]→ public/offline/kalimba-tab.html
-                 └─[sync_composer]→ ../web/composer.html
+                 └─[sync_composer]→ ../web-vue/public/composer.html
 
    为什么要这个脚本：
      离线版**故意不走 Vite 打包**（只按依赖序把模块正文拼成一个经典 <script>），
      好处是「产物 vs 源文件」可直接 diff，代价是**没有任何东西自动保证产物是最新的**。
      2026-10-06 就踩了这个坑：真源已是 `100vh - 209px`，而 offline 产物与
-     web/composer.html（**V3 主线线上制谱页**）还停在 `190px`，落后一个版本。
+     线上制谱页还停在 `190px`，落后一个版本。
+     （当时线上制谱页是 `web/composer.html`；2026-10-10 前端主线切到 Vue 版后，
+      该派生文件的落点改为 `web-vue/public/composer.html`。）
 
    实现要点（⚠️ 别改回去「重跑构建再比对」）：
      本机 Node **不能 spawn 任何外部程序**（execFileSync/spawnSync 一律 EBUSY），
@@ -48,7 +50,7 @@ const KDIR = path.resolve(ROOT, 'src', 'kernel');
 const OFFLINE = flags.offline ? path.resolve(flags.offline)
   : path.resolve(ROOT, 'public', 'offline', 'kalimba-tab.html');
 const COMPOSER = flags.composer ? path.resolve(flags.composer)
-  : path.resolve(ROOT, '..', 'web', 'composer.html');
+  : path.resolve(ROOT, '..', 'web-vue', 'public', 'composer.html');
 
 /* ---- 镜像 build_offline.js：装配序（被依赖的在前）---- */
 const ORDER = ['foundation', 'state', 'core', 'parser', 'layout', 'renderer',
@@ -221,9 +223,9 @@ if (!fs.existsSync(OFFLINE)) {
     '重跑 npm run offline:build');
 }
 
-/* ======================= ③ web/composer.html 派生 ======================= */
+/* ======================= ③ web-vue/public/composer.html 派生 ======================= */
 if (!fs.existsSync(COMPOSER)) {
-  bad('V3 制谱页存在', COMPOSER, '先跑 node tools/sync_composer.js');
+  bad('制谱页存在', COMPOSER, '先跑 node tools/sync_composer.js');
 } else {
   const actualComposer = fs.readFileSync(COMPOSER, 'utf8');
 
@@ -236,13 +238,13 @@ if (!fs.existsSync(COMPOSER)) {
   const expectedComposer = expectedOffline
     .replace(HEAD_ANCHOR, HEAD_ANCHOR + '\n' + HEAD_TAGS)
     .replace(BODY_ANCHOR, THEME);
-  sameBytes('V3 制谱页 = 离线产物 + PWA 头部 + V3 主题（逐字节一致）', actualComposer, expectedComposer,
+  sameBytes('制谱页 = 离线产物 + PWA 头部 + V3 主题（逐字节一致）', actualComposer, expectedComposer,
     '重跑 node tools/sync_composer.js');
 
   /* 幂等性：注入不该重复叠加 */
   const manifestN = actualComposer.split('rel="manifest"').length - 1;
-  if (manifestN === 1) ok('V3 制谱页未重复叠加注入', 'rel="manifest" ×1');
-  else bad('V3 制谱页未重复叠加注入', `rel="manifest" ×${manifestN}（应为 1）`, '该文件被重复注入，重跑 sync_composer.js');
+  if (manifestN === 1) ok('制谱页未重复叠加注入', 'rel="manifest" ×1');
+  else bad('制谱页未重复叠加注入', `rel="manifest" ×${manifestN}（应为 1）`, '该文件被重复注入，重跑 sync_composer.js');
 }
 
 report();
@@ -253,7 +255,7 @@ function report() {
   console.log('离线产物链一致性校验');
   console.log('  真源      : ' + path.relative(ROOT, SRC).replace(/\\/g, '/'));
   console.log('  离线产物  : ' + path.relative(ROOT, OFFLINE).replace(/\\/g, '/'));
-  console.log('  V3 制谱页 : ' + path.relative(ROOT, COMPOSER).replace(/\\/g, '/'));
+  console.log('  制谱页 : ' + path.relative(ROOT, COMPOSER).replace(/\\/g, '/'));
   console.log('');
   for (const r of rows) {
     if (r.ok) {
@@ -266,7 +268,7 @@ function report() {
   }
   console.log('');
   console.log('  时间戳仅供参考（内容才是判据）：');
-  for (const [label, p] of [['真源', SRC], ['离线产物', OFFLINE], ['V3 制谱页', COMPOSER]]) {
+  for (const [label, p] of [['真源', SRC], ['离线产物', OFFLINE], ['制谱页', COMPOSER]]) {
     if (fs.existsSync(p)) {
       console.log('    ' + label.padEnd(10) + fs.statSync(p).mtime.toISOString().replace('T', ' ').slice(0, 19) + '  ' + path.basename(p));
     }

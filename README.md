@@ -3,12 +3,16 @@
 `kalimba-tab/index.html`（单文件制谱器）的**构建期工具目录**。
 不含任何运行时依赖，不需要 `npm install` —— 三个脚本只用 Node 内置模块。
 
-> **沿革**：本目录原先是「卡林巴社区工坊前端」（Vue 3 + Vite + Pinia + vue-router 的
-> SPA）。前端主线后来切到 `../web/` 的 **V3 静态多页**，Vue SPA 于 2026-10-07 整体下线，
-> 只保留这条**制谱内核构建链** —— 因为 V3 的线上制谱页 `../web/composer.html`
-> 正是由它产出的。Vue 时代的页面与组件可在 `../frontend` 的 git 历史中找回
-> （远程仓库 `Kalimba-WorkShop-frontend`），另有快照见
-> `../../BackUpDocument/vue-spa-removed-20261007/`。
+> **沿革**：本目录原先是「卡林巴社区工坊前端」（Vue 3 + Vite + Pinia + vue-router 的 SPA）。
+> 前端主线先是换成 V3 静态多页（`../web/`），2026-10-10 又换成 `../web-vue/` 的 Vue 3 重构版；
+> 本目录的 SPA 已于 2026-10-07 整体下线，**只保留这条「制谱内核构建链」** ——
+> 因为线上制谱页 `../web-vue/public/composer.html` 正是由它产出的。
+> Vue 时代的页面与组件可在**本目录的 git 历史**中找回（远程仓库 `Kalimba-WorkShop-frontend`），
+> 另有快照见 `../../BackUpDocument/vue-spa-removed-20261007/`。
+>
+> ⚠️ **本目录不参与运行时**：线上制谱页是**自包含单文件**（内核已内联、0 个外链 script），
+> 跑前端只需要 `../web-vue/`。本目录只在「**要改内核**」时才需要 ——
+> 但它**是这条链的唯一存在处**，删掉就再也无法重新生成 `composer.html`。
 
 配套后端仓库：[Kalimba-WorkShop-backend](https://github.com/thetides45/Kalimba-WorkShop-backend)
 
@@ -17,10 +21,10 @@
 ## 产物链
 
 ```
-kalimba-tab/index.html                          唯一真源（单文件，手写）
-  └─[kernel:extract]→ src/kernel/*.js           10 个模块（自动生成，勿手改）
-       └─[offline:build]→ public/offline/kalimba-tab.html    单 HTML 离线版
-            └─[sync_composer]→ ../web/composer.html          V3 线上制谱页
+kalimba-tab/index.html                                      唯一真源（单文件，手写）
+  └─[kernel:extract]→ src/kernel/*.js                       10 个模块（自动生成，勿手改）
+       └─[offline:build]→ public/offline/kalimba-tab.html   单 HTML 离线版
+            └─[sync_composer]→ ../web-vue/public/composer.html   线上制谱页
 ```
 
 ⚠️ **顺序不能颠倒**，且**内核一改就必须从第一步开始**：`build_offline.js` 的输入是
@@ -30,7 +34,7 @@ kalimba-tab/index.html                          唯一真源（单文件，手�
 ```bash
 node tools/extract_kernel.js      # ① 真源 → src/kernel/*.js
 node tools/build_offline.js       # ② (外壳 + 内核) → public/offline/kalimba-tab.html
-cd .. && node tools/sync_composer.js   # ③ 离线产物 → web/composer.html
+cd .. && node tools/sync_composer.js   # ③ 离线产物 → web-vue/public/composer.html
 node tools/verify_offline.js      # ④ 逐字节校验整条链，退出码 0/1
 ```
 
