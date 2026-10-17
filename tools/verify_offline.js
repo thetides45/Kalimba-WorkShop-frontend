@@ -21,6 +21,15 @@
      重建逻辑是 build_offline.js / sync_composer.js 的**镜像**：那两处一改动，
      本文件必须同步改（下面对应段落都有标记）。
 
+   ④ 重提取对比（2026-10-13 补，堵住产物链**根部**的缺口）：
+     ② ③ 两段的期望值都是**读 src/kernel 重建**出来的 —— 也就是拿 src/kernel
+     验它自己。于是「src/kernel 是不是当前真源的提取产物」这一跳从来没被验过：
+     改了真源的 <script> 块却忘了跑 kernel:extract，只要之后重建过离线产物，
+     门禁照样全绿。现在补上：在**临时目录**重跑一次提取，再与仓库 src/kernel 逐文件比。
+     ⚠️ 同样受「不能 spawn」限制，所以走**进程内动态 import** 生成器，并给它一套
+        临时 argv（否则它会按默认值把结果写回仓库的 src/kernel/，自己覆盖自己）。
+        extract_kernel.js 的输出不含时间戳、是确定性的，这条对比才有意义。
+
    判定口径：**内容为准，不看时间戳**。「新鲜」= 重建结果与磁盘产物逐字节相同。
 
    用法：
@@ -30,8 +39,9 @@
    退出码：0 = 全部一致；1 = 有不一致（可直接用作 CI 门禁）。
    ===================================================================== */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -61,7 +71,14 @@ const SCRIPT_RE = /<script id="(s-[a-z]+)">[\s\S]*?<\/script>\n?/g;
 const REAL_KERNEL_MARK_START = '<script>\n';
 const REAL_KERNEL_MARK_END = '<\/script>';
 
-/* ---- 镜像 sync_composer.js：两处注入 ---- */
+/* ---- 镜像 sync_composer.js：**三处**注入 ----
+   ⚠️⚠️ 这一节必须与 `kalimba-workshop/tools/sync_composer.js` 的对应常量**逐字符一致**
+       （它是产物链的期望值）。那边每加/改一处注入，这里就得跟着改 ——
+       2026-10-16 就漂过一次：sync 加了第三处（站内导航入口）与主题里的离线提示样式，
+       而本文件还在按「两处」拼期望值，门禁于是报了一条假红。
+       ⚠️ 为什么不直接 require 那边：① 本文件是 ESM、那边是 CJS；
+       ② 更关键的是**那边不在 git 里**（在 kalimba-workshop/tools/，而本文件在 frontend/ 仓库），
+          引它会让门禁在别人 checkout 后直接挂掉。所以只能镜像，靠这条注释维系同步。 */
 const HEAD_ANCHOR = '<title>卡林巴转谱工坊 · 简谱 → 拇指琴专用谱</title>';
 const HEAD_TAGS = [
   '<link rel="manifest" href="manifest.webmanifest">',
@@ -85,7 +102,70 @@ const THEME = [
   '  --accent:#5D4432; --accent2:#EFE7DE;',
   '  --warn:#C05A3E; --warn-bg:#FBEDE6; --dot:#3E2B1E;',
   '}',
-  '</style></body>',
+  '/* ③ 站内导航入口的样式：复用 .btn 的底子，弱化成次要样式（不抢「播放 / 导出」的焦点）。 */',
+  '.btn.back-site{background:transparent; border-color:transparent; color:var(--ink2);',
+  '  text-decoration:none; display:inline-flex; align-items:center}',
+  '.btn.back-site:hover{background:var(--accent2); color:var(--accent)}',
+  '/* ③-b 离线降级提示（只在「地址栏是首页、却拿到制谱器」时出现，见下面脚本的说明） */',
+  '.offline-tip-mask{position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(62,43,30,.42);',
+  '  display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px}',
+  '.offline-tip{background:var(--panel);color:var(--ink);border-radius:14px;padding:22px 24px;',
+  '  max-width:420px;box-shadow:0 18px 48px rgba(62,43,30,.24)}',
+  '.offline-tip .ot-t{font-size:15px;font-weight:650;margin-bottom:8px}',
+  '.offline-tip .ot-d{font-size:13px;line-height:1.75;color:var(--ink2)}',
+  '.offline-tip .ot-a{margin-top:16px;text-align:right}',
+  '</style>',
+  '<script>',
+  '/* ③ 离线时把「回拇指琴谷」藏起来。',
+  '   原因：断网点它会导航到首页，而 Service Worker 的离线降级又把首页交回本页',
+  '   （首页 → composer.html，见 web-vue/public/sw.js 的 navigate 分支）—— 表现成「点了没反应」。',
+  '   与其留一个死链接，不如直接藏掉；网络恢复（online 事件）再显示出来。',
+  '   ⚠️ 这是**宿主环境**的判断：只有挂在站点里的这份产物才有「回门户」和「有没有网」的概念，',
+  '      内核（双击即用的本地单文件）里没有，所以放注入层而不是内核。 */',
+  '(function () {',
+  '  /* 「本页是被离线降级跳来的」：地址栏停在站点首页，却拿到了制谱器。',
+  '     有网时 SW 返回的是真正的首页；用户自己打开 /composer.html 时路径也不同 —— 判据很干净。',
+  '     ⚠️ 不能只看 navigator.onLine：它不可靠（连着无网路由器时仍是 true，但请求全失败）。 */',
+  '  var isRoot = (location.pathname === "/" || location.pathname === "/index.html");',
+  '',
+  '  /* ---------- 顶栏「回拇指琴谷」：离线或本页是被降级跳来的 → 藏掉 ----------',
+  '     那种情况下点它会导航到首页，而 SW 又把首页交回本页（首页 → composer.html），',
+  '     表现成「点了没反应」。与其留个死链接，不如藏掉；恢复联网（online 事件）再显示。',
+  '     ⚠️ 这里用 `if (a) { ... }` 包住而**不是** `if (!a) return`：',
+  '        下面还有弹窗要做 —— 别让「按钮没注入成功」把弹窗一起带走。 */',
+  '  var a = document.getElementById("backSite");',
+  '  if (a) {',
+  '    var sync = function () {',
+  '      a.style.display = (navigator.onLine === false || isRoot) ? "none" : "";',
+  '    };',
+  '    sync();',
+  '    window.addEventListener("online", sync);',
+  '    window.addEventListener("offline", sync);',
+  '  }',
+  '',
+  '  /* ---------- 离线降级提示（2026-10-16 用户要求）---------- */',
+  '  if (!isRoot) return;',
+  '  var mask = document.createElement("div");',
+  '  mask.className = "offline-tip-mask";',
+  '  mask.setAttribute("role", "alertdialog");',
+  '  mask.innerHTML = \'<div class="offline-tip">\'',
+  '    + \'<div class="ot-t">离线模式</div>\'',
+  '    + \'<div class="ot-d">检测到当前为离线模式，已自动跳转至预加载的制谱页。在联网时刷新即可回到首页。</div>\'',
+  '    + \'<div class="ot-a"><button type="button" class="btn primary" id="otOk">知道了</button></div>\'',
+  '    + \'</div>\';',
+  '  document.body.appendChild(mask);',
+  '  var okBtn = document.getElementById("otOk");',
+  '  if (okBtn) okBtn.addEventListener("click", function () {',
+  '    if (mask.parentNode) mask.parentNode.removeChild(mask);',
+  '  });',
+  '})();',
+  '</script></body>',
+].join('\n');
+const ACTIONS_ANCHOR = '<div class="actions">';
+const ACTIONS_WITH_BACK = [
+  ACTIONS_ANCHOR,
+  '    <!-- ★ 由 tools/sync_composer.js 注入，别手改本文件（下次同步会覆盖） -->',
+  '    <a class="btn back-site" id="backSite" href="/" target="_top" title="回到拇指琴谷首页">← 回拇指琴谷</a>',
 ].join('\n');
 
 /* ======================= 断言与报告 ======================= */
@@ -231,20 +311,78 @@ if (!fs.existsSync(COMPOSER)) {
 
   const headHits = expectedOffline.split(HEAD_ANCHOR).length - 1;
   const bodyHits = expectedOffline.split(BODY_ANCHOR).length - 1;
-  if (headHits === 1 && bodyHits === 1) ok('注入锚点在离线产物中各命中 1 次');
-  else bad('注入锚点在离线产物中各命中 1 次', `title 锚点 ${headHits} 次 / </script></body> 锚点 ${bodyHits} 次`,
+  const actionsHits = expectedOffline.split(ACTIONS_ANCHOR).length - 1;
+  if (headHits === 1 && bodyHits === 1 && actionsHits === 1) ok('注入锚点在离线产物中各命中 1 次');
+  else bad('注入锚点在离线产物中各命中 1 次',
+    `title ${headHits} 次 / </script></body> ${bodyHits} 次 / <div class="actions"> ${actionsHits} 次`,
     '锚点漂移 —— sync_composer.js 会报错，先看它');
 
   const expectedComposer = expectedOffline
     .replace(HEAD_ANCHOR, HEAD_ANCHOR + '\n' + HEAD_TAGS)
+    .replace(ACTIONS_ANCHOR, ACTIONS_WITH_BACK)
     .replace(BODY_ANCHOR, THEME);
-  sameBytes('制谱页 = 离线产物 + PWA 头部 + V3 主题（逐字节一致）', actualComposer, expectedComposer,
+  sameBytes('制谱页 = 离线产物 + PWA 头部 + 站内导航入口 + V3 主题（逐字节一致）',
+    actualComposer, expectedComposer,
     '重跑 node tools/sync_composer.js');
 
   /* 幂等性：注入不该重复叠加 */
   const manifestN = actualComposer.split('rel="manifest"').length - 1;
   if (manifestN === 1) ok('制谱页未重复叠加注入', 'rel="manifest" ×1');
   else bad('制谱页未重复叠加注入', `rel="manifest" ×${manifestN}（应为 1）`, '该文件被重复注入，重跑 sync_composer.js');
+}
+
+/* ======================= ④ src/kernel 是否仍是当前真源的提取产物 =======================
+   —— 产物链**根部**那一跳（真源 → src/kernel）。
+   ② ③ 的期望值都由 src/kernel 重建而来，验不到这一跳；这里在临时目录重跑生成器补上。
+
+   ⚠️ 只能在**本进程内**把生成器当模块跑（不能 spawn，见文件头），且必须先给它一套
+      临时 argv —— 生成器的 OUTDIR 默认就是仓库的 src/kernel/，不动 argv 会自己覆盖自己。
+      console.log 也要收走，否则它的分析报告会混进门禁输出。 */
+const KFILES = ['_ns.js', ...ORDER.map(id => id + '.js')];
+{
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kalverify-'));
+  const tmpKernel = path.join(tmpRoot, 'kernel');
+  const savedArgv = process.argv;
+  const savedLog = console.log;
+  const savedExit = process.exit;
+  let extractErr = null;
+  try {
+    process.argv = [savedArgv[0], 'extract_kernel.js', SRC, tmpKernel];
+    console.log = () => {};                       // 生成器报告不进门禁输出
+    process.exit = (code) => {                    // 它内部有 process.exit(1)（跨模块重名时）
+      throw new Error('extract_kernel 主动退出（code=' + code + '）');
+    };
+    await import(pathToFileURL(path.resolve(ROOT, 'tools', 'extract_kernel.js')).href
+      + '?reverify=' + Date.now());               // query 绕过 ESM 模块缓存
+  } catch (e) {
+    extractErr = e;
+  } finally {
+    process.argv = savedArgv; console.log = savedLog; process.exit = savedExit;
+  }
+
+  if (extractErr) {
+    bad('重提取：src/kernel 可由当前真源重新生成', extractErr.message,
+      '生成器跑不通 —— 先直接跑 npm run kernel:extract 看它报哪一条补丁没命中');
+  } else {
+    ok('重提取：src/kernel 可由当前真源重新生成', KFILES.length + ' 个文件');
+    const drifted = [];
+    for (const f of KFILES) {
+      const inRepo = path.join(KDIR, f), inTmp = path.join(tmpKernel, f);
+      if (!fs.existsSync(inTmp)) { drifted.push(f + '（重提取未产出）'); continue; }
+      if (!fs.existsSync(inRepo)) { drifted.push(f + '（仓库缺失）'); continue; }
+      /* ⚠️ 必须读成 utf8 字符串：不带编码时 readFileSync 返回 Buffer，
+         Buffer !== Buffer 是**引用比较**、恒为 true —— 会把所有文件都误报成漂移。 */
+      if (fs.readFileSync(inRepo, 'utf8') !== fs.readFileSync(inTmp, 'utf8')) drifted.push(f);
+    }
+    if (!drifted.length) {
+      ok('src/kernel/*.js 与重提取结果逐字节一致', KFILES.join(' '));
+    } else {
+      bad('src/kernel/*.js 与重提取结果逐字节一致',
+        '漂移：' + drifted.join(', '),
+        '内核正文旧了 —— 重跑 npm run kernel:extract → npm run offline:build → node ../tools/sync_composer.js');
+    }
+  }
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
 }
 
 report();

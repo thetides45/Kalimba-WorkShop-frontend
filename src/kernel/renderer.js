@@ -410,6 +410,8 @@ function drawPageHead(grid, t, st, geo){
   /* 标题走 attachVals().title（没填就回落到谱面里的曲名 —— 由 attachVals 侧统一决定，
      这里不再自己判断，免得两处口径漂）。 */
   const title = (geo.a && geo.a.title) || meta.title;
+  /* ★ 首页 17px / 续页（运行页眉）**13px**：续张字号小一号让位给内容，且与首页标题同一基线（翻页不跳）。
+     ⚠️ 别写死成 17 —— 这一行被两支探针同时盯着（sheet 的「运行页眉 13px」+ head 的「续页标题字号」）。 */
   let s = tx(geo.hl, P + 22, title,
              {size: geo.pi === 0 ? 17 : 13, weight:HEAD_BOLD, fill:HEAD_INK});
   /* 作者：空就不占位（照片上「作者」是一条实打实的横条，没填就整行不出）。

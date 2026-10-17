@@ -158,7 +158,9 @@ const pngName = (base, i, total) =>
 async function exportPng(){
   if(!ST.grid) return;
   const pages = (renderForExport(true, true).pages) || [];
-  const btn = $('btnPng'), label = btn.textContent;
+  /* ⚠️ 2026-10-12 起顶栏的导出按钮合并成一个 `#btnExport`（原来这里读 `#btnPng`）——
+     进度文案仍然写在这一个按钮上，因为此刻只有它在被点。 */
+  const btn = $('btnExport'), label = btn.textContent;
   btn.disabled = true;
   try{
     if(!pages.length) throw new Error('没有可导出的内容');
@@ -173,11 +175,107 @@ async function exportPng(){
     noteExported(files.length + ' 张 PNG' +
       (files.length > 1 ? '（' + zipName() + '）' : '（' + files[0].name + '）'));
   }catch(err){
-    alert('PNG 导出失败：' + ((err && err.message) || err) + '\n可改用「导出 SVG」。');
+    alert('PNG 导出失败：' + ((err && err.message) || err) + '\n可改用导出里的「SVG」。');
   }finally{
     btn.disabled = false; btn.textContent = label;
   }
 }
+
+/* 导出 JSON（用户 2026-10-12）：把这份谱的**完整状态**落成一个文件。
+   它导出的是「数据」不是「版面」—— 版面参数（行高列宽 / 双栏 / 页眉页脚）本工坊有固定口径，
+   再存一份只会两边漂。所以这里只放**会随用户操作变化**的东西：
+     ① 元信息（曲名 / 调号 / 拍号 / 速度 / 读谱方式与方向 / 移调 / 网格精度）
+     ② 简谱原文（`#src` 的全文）—— 有了它，任何一份导出的 JSON 都能被重新「生成琴谱」
+     ③ 网格音符（逐行逐音：轨道号 / MIDI / 音名 / 时值 / 是否超域）—— 供二次处理
+   ⚠️ 本工坊**没有** JSON 导入，它不是工程文件格式；要「再打开」请用简谱原文那一项。
+     别把它写成「可回读」的样子，那是另一件事（要另做导入 + 校验）。 */
+function exportJson(){
+  if(!ST.grid) return;
+  const g = ST.grid, t = ST.tuning, opt = exportOpts();
+  const data = {
+    format: 'kalimba-tab', version: 1,
+    exportedAt: new Date().toISOString(),
+    title: g.meta.title,
+    key: {name: g.meta.keyName, pc: g.meta.keyPc},
+    meter: g.meta.meter.concat(),            // 存成数组就不用再去拆 "4/4"
+    tempo: g.meta.tempo,
+    tuning: {key: opt.tuningKey, notes: opt.tuningNotes, len: t ? t.len : null},
+    mode: ST.st.mode,                        // 读谱方式：movable 首调 / fixed 固定调
+    direction: ST.st.direction,              // 读谱方向：up 从下往上 / down 从上往下
+    transpose: ST.transpose,                 // 半音，0 = 未移调
+    unit: g.unit,                            // 一格 = 几拍
+    rowsPerMeasure: g.rowsPerMeasure,
+    beatsPerMeasure: g.beatsPerMeasure,
+    nMeasures: g.nMeasures,
+    totalBeats: g.totalBeats,
+    usedCols: [...g.usedCols],
+    /* ⚠️ 只收 items/rest 这两个「谱面本身」的字段：行上还挂着 beatInMeasure / measure /
+       isBarStart 等一堆**由行号推出来的**派生字段，存进去是冗余，读的人还得自己判断哪个是权威。 */
+    rows: g.rows.map(r => ({
+      idx: r.idx,
+      rest: !!r.rest,
+      items: r.items.map(it => ({
+        col: it.col, midi: it.midi, label: it.label, dur: it.dur,
+        voice: it.voice || 0, bad: !!it.bad
+      }))
+    })),
+    source: $('src').value
+  };
+  const name = baseName() + '.json';
+  dl(new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}), name);
+  noteExported('JSON（' + name + '）');
+}
+
+/* ---------- JSON 导入：与顶栏「导出 json」构成闭环（2026-10-16） ----------
+   导出见 exportJson：format/version + 全部状态 + source（简谱原文）+ rows。
+
+   ★ 恢复策略：**把 source 填回「简谱输入」再走一次重建**，而不是把 rows 直接灌进网格。
+     理由：这样网格 / 音位 / 行号全部由内核自己算，不会因为版本差异出现"字段对不上"的错位；
+     而 source 头部那几行 `title: key: tuning: mode: direction: transpose:`
+     由既有的 applyMetaOpts 自动落到界面与状态上（内核本来就支持 —— 见「简谱语法速查」）。
+   ⚠️ rows 只用来**提示**（"原文件 N 行网格"），不参与恢复 —— 真要把它当权威，
+      就得跟 buildGrid 的内部实现细节绑死，内核一改版导入就废。
+   ⚠️ 重建走 guardRebuild(true)：手动点选编辑过谱面时它要弹确认，这一步不能跳。 */
+function handleJsonFile(file){
+  const reader = new FileReader();
+  reader.onload = () => importJsonText(String(reader.result || ''), file.name);
+  reader.onerror = () => jsonNote('读取文件失败，请重试。', true);
+  reader.readAsText(file, 'utf-8');
+}
+
+function jsonNote(msg, isErr){
+  const el = $('jsonMsg');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = isErr ? 'var(--warn)' : 'var(--ink3)';
+}
+
+function importJsonText(text, name){
+  let data;
+  try{ data = JSON.parse(text); }
+  catch(e){ jsonNote('不是合法的 JSON 文件。', true); return; }
+
+  if(!data || typeof data !== 'object' || data.format !== 'kalimba-tab'){
+    jsonNote('这不是本工具导出的谱面文件（缺少 format: kalimba-tab）。', true); return;
+  }
+  const src = typeof data.source === 'string' ? data.source : '';
+  if(!src.trim()){
+    /* 理论上不会：exportJson 总是带 source。留这条是为了"手工拼出来的 JSON"也有明确反馈，
+       而不是静默什么都不发生。 */
+    jsonNote('这份数据里没有简谱原文（source），无法还原谱面。', true); return;
+  }
+
+  $('src').value = src;
+  guardRebuild(true);          // 与「生成琴谱」同一条路：应用文件头选项 → 重建 → 重绘
+
+  const n = Array.isArray(data.rows) ? data.rows.length : null;
+  jsonNote('已导入' + (name ? '：' + name : '') + '（' + (data.title || '未命名') + '）'
+           + (n !== null ? ' · 原文件 ' + n + ' 行网格' : ''), false);
+}
+
+/* 导出格式弹窗的开合。焦点先落到第一个选项，键盘用户 Tab / Enter 就能走完整个流程。 */
+function openExportDlg(){ $('expMask').hidden = false; $('expSvg').focus(); }
+function closeExportDlg(){ $('expMask').hidden = true; }
 
 /* 打印 / 存 PDF：临时切到分页排版，出图后切回连续预览。
    ★ pagedLayout 与 ST.paged 是**两件事**，别合并：
@@ -759,8 +857,18 @@ function init(){
   $('bpmIn').addEventListener('keydown', e => {
     if(e.key === 'Enter'){ setTempo(e.target.value); e.target.blur(); }
   });
-  $('btnSvg').addEventListener('click', exportSvg);
-  $('btnPng').addEventListener('click', exportPng);
+  /* 导出：合并成一个按钮 + 格式弹窗（用户 2026-10-12；原来这里是「导出 SVG」「导出 PNG」两个并排按钮）。
+     ⚠️ `exportSvg` / `exportPng` 这两个**函数名不能跟着改** —— 工装（kal_png_probe 等）是
+        直接调它们的；换个触发方式不该连带改测试。 */
+  $('btnExport').addEventListener('click', openExportDlg);
+  $('expSvg').addEventListener('click', () => { closeExportDlg(); exportSvg(); });
+  $('expPng').addEventListener('click', () => { closeExportDlg(); exportPng(); });
+  $('expCancel').addEventListener('click', closeExportDlg);
+  $('expMask').addEventListener('click', e => { if(e.target === $('expMask')) closeExportDlg(); });
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape' && !$('expMask').hidden) closeExportDlg();
+  });
+  $('btnJson').addEventListener('click', exportJson);
   $('btnPrint').addEventListener('click', printScore);
 
   $('keySel').addEventListener('change', e => {
@@ -851,6 +959,11 @@ function init(){
     }
   });
 
+  /* JSON 导入：选文件（与 MusicXML 导入同一套写法，连清空 input.value 的理由都一样 ——
+     同一文件连选两次也要能触发 change） */
+  $('btnJsonFile').addEventListener('click', () => $('jsonFile').click());
+  $('jsonFile').addEventListener('change', e => { const f = e.target.files[0]; if(f) handleJsonFile(f); e.target.value = ''; });
+
   /* MusicXML 导入：选文件 / 示例 */
   $('btnXmlFile').addEventListener('click', () => $('xmlFile').click());
   $('xmlFile').addEventListener('change', e => { const f = e.target.files[0]; if(f) handleXmlFile(f); e.target.value = ''; });
@@ -886,4 +999,4 @@ function init(){
    否则任何 import 到本模块的代码（例如只用 renderer 的调用方）都会在加载时就去摸工作台 DOM。 */
 
 /* ─────────────── 本模块对外出口 ─────────────── */
-export { SAMPLE, SAMPLE_XML, SVG_CH_ADD, SVG_CH_DEL, applyAttach, applyImported, applyMetaOpts, applyMidiChannels, attachFillTitle, attachTimer, autoFit, currentTuning, exportOpts, exportPng, guardRebuild, handleMidiFile, handleXmlFile, inflateRaw, init, midiChNameCount, midiChOptText, midiChOptionsHTML, midiChSelEls, midiChTaken, midiChsPicked, onBpmInput, pngName, populateMidiChannels, printScore, rebuild, redrawForAttach, refreshMidiChOptions, renderMidiChRows, seg, segSet, setMetaLine, setPagedLayout, setTempo, syncBpm, syncEditUI, syncMidiChRows, syncMidiChSelTitles, toggleAttach, unzipMxl, zipName };
+export { SAMPLE, SAMPLE_XML, SVG_CH_ADD, SVG_CH_DEL, applyAttach, applyImported, applyMetaOpts, applyMidiChannels, attachFillTitle, attachTimer, autoFit, closeExportDlg, currentTuning, exportJson, exportOpts, exportPng, guardRebuild, handleJsonFile, handleMidiFile, handleXmlFile, importJsonText, inflateRaw, init, jsonNote, midiChNameCount, midiChOptText, midiChOptionsHTML, midiChSelEls, midiChTaken, midiChsPicked, onBpmInput, openExportDlg, pngName, populateMidiChannels, printScore, rebuild, redrawForAttach, refreshMidiChOptions, renderMidiChRows, seg, segSet, setMetaLine, setPagedLayout, setTempo, syncBpm, syncEditUI, syncMidiChRows, syncMidiChSelTitles, toggleAttach, unzipMxl, zipName };
