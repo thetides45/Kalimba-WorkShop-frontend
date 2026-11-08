@@ -15,7 +15,7 @@ import { buildGrid, gridToJianpu } from './layout.js';
 import { decodeXmlText, midiChannelParsed, parseMidi, parseMusicXML, parseSource, tempoNote, xmlTitle } from './parser.js';
 import { invalidatePlayback, play, previewNote, resetProgress, stopPlayback, syncProg } from './player.js';
 import { CW, RD, escAttr } from './renderer.js';
-import { ATTACH_IDS, ST, attachQR, attachTitleVal, baseName, dl, draw, pagedLayout, report, scoreTitle, setPagedLayoutFlag } from './state.js';
+import { ATTACH_IDS, ST, afterEdit, attachQR, attachTitleVal, baseName, dl, draftSave, draftScheduleSave, draw, kalHasUnsaved, kalSnapshot, pagedLayout, report, scoreTitle, setPagedLayoutFlag } from './state.js';
 
 /* ─────────────── 以下为段内原文（逐字搬运） ─────────────── */
 
@@ -96,6 +96,7 @@ function rebuild(applyMeta){
   invalidatePlayback();             // 换了谱面，进度回到开头
   syncBpm();                        // 简谱文本里的 tempo: 就是这个入口的真源
   draw(); report();
+  draftScheduleSave();              // 重新生成 ⇒ 攒一次自动保存
 }
 
 function guardRebuild(applyMeta){
@@ -189,6 +190,105 @@ async function exportPng(){
      ③ 网格音符（逐行逐音：轨道号 / MIDI / 音名 / 时值 / 是否超域）—— 供二次处理
    ⚠️ 本工坊**没有** JSON 导入，它不是工程文件格式；要「再打开」请用简谱原文那一项。
      别把它写成「可回读」的样子，那是另一件事（要另做导入 + 校验）。 */
+/* =====================================================================
+   未保存提醒（2026-11-08 用户要求）
+   ---------------------------------------------------------------------
+   三处入口共用这一套判据：
+     ① 桌面内核（本文件）
+     ② 站内制谱页 —— `ComposerView.vue` 用 iframe 承载 composer.html，
+        它通过 `window.__kalimbaHasUnsaved()` 问内核（见文件末尾的导出）；
+     ③ PWA 预加载的离线产物 `offline/kalimba-tab.html` —— 由本文件重新生成，自动带上。
+
+   ★ 为什么不复用 `ST.dirty`：它只表示「**手动点选**编辑过」——
+     换琴型 / 改 BPM / 手改标题 / 移调 / 谱面转换都不会置它，
+     而这些恰恰是最容易忘保存的改动。
+   ⇒ 所以这里用**状态快照比对**：记一份「上次保存时的样子」，关页面时比一次。
+
+   快照 = 简谱原文 + 元信息（曲名/调性/速度/拍号/琴型/读法/方向/移调/格宽…）+ 全部网格音符。
+   612 行的谱也只有几十 KB，而且**只在关闭页面、导出、导入时才算**，不占日常操作开销。
+
+   ⚠️ beforeunload 的三条现代限制（都绕不过，只能接受）：
+      · 浏览器**忽略自定义文案** —— 只会显示它自己的「可能有未保存的更改」；
+      · `preventDefault()` 与 `returnValue` **必须一起写**，少一个在部分浏览器不弹；
+      · 需要用户**有过交互**才会弹（纯打开即关不提示，这是浏览器的保护机制）。
+   ===================================================================== */
+var KAL_SNAP = null;
+
+/* =====================================================================
+   浏览器持久化：自动保存草稿（2026-11-08 用户要求）
+   ---------------------------------------------------------------------
+   ★ 为什么**必须连网格一起存**：手动「点选编辑」（加点/删点）只改 `ST.grid`，
+     `afterEdit()` 并**不回写「简谱输入」的文本**。只存文本的话，刷新回来手动编辑全没了
+     —— 而那恰恰是最该被保住的内容。
+
+   ★ 为什么用 LocalStorage 而不是 IndexedDB：一份 612 行的谱草稿约 100 KB，
+     LocalStorage 的 5 MB 完全够；IndexedDB 要处理异步事务、版本迁移，复杂得多。
+     代价是写入同步会阻塞主线程 ⇒ 用**防抖 1.2s** 合并连续操作。
+
+   ⚠️ 隐私模式 / 配额满时 `setItem` 会抛错 ⇒ 全部 try/catch 包住。
+      **保存失败绝不能影响制谱本身** —— 这是锦上添花的功能，不能变成新的失败点。
+   ===================================================================== */
+var DRAFT_KEY = 'kalimba_tab_draft_v1';
+var DRAFT_MS  = 1200;
+var draftTimer = null;
+
+
+
+
+function draftClear(){
+  try { localStorage.removeItem(DRAFT_KEY); } catch(e){}
+  if(draftTimer){ clearTimeout(draftTimer); draftTimer = null; }
+}
+
+/* 恢复草稿：只把**文本与界面选项**摆好，网格由调用方 rebuild 之后再覆盖
+   （因为网格的派生字段要靠 rebuild 算出来）。返回草稿对象，失败返回 null。 */
+function draftRestore(){
+  var raw;
+  try { raw = localStorage.getItem(DRAFT_KEY); } catch(e){ return null; }
+  if(!raw) return null;
+  var d;
+  try { d = JSON.parse(raw); } catch(e){ draftClear(); return null; }     // 坏数据直接丢
+  if(!d || d.v !== 1 || typeof d.src !== 'string' || !d.src.trim()){ draftClear(); return null; }
+  if(!d.rows || !d.rows.length){ draftClear(); return null; }
+
+  $('src').value = d.src;
+  var m = d.meta || {};
+  if(m.mode){ ST.st.mode = m.mode; $('modeSel').value = m.mode; }
+  if(m.tuningKey && (m.tuningKey === 'custom' || TUNINGS[m.tuningKey])){
+    ST.tuningKey = m.tuningKey;
+    $('tuningSel').value = m.tuningKey;
+    var cw = $('customWrap'); if(cw) cw.style.display = m.tuningKey === 'custom' ? 'block' : 'none';
+  }
+  if(m.direction){ ST.st.direction = m.direction; segSet('dirSeg', m.direction); }
+  if(typeof m.transpose === 'number'){ ST.transpose = m.transpose; ST.st.transpose = m.transpose; }
+  if(m.unitMode){ ST.st.unitMode = m.unitMode; segSet('unitSeg', m.unitMode); }
+  return d;
+}
+
+
+/* 标记「已保存」。调用点有三个，语义都是「此刻的内容就是基准」：
+   初始载入、导出 JSON、导入文件。
+   ⚠️ 导入按「打开文件」的语义算作新基准 —— 否则刚导入就提示"未保存"，用户会以为程序出错了。 */
+function kalMarkSaved(){
+  try { KAL_SNAP = kalSnapshot(); } catch(e){ KAL_SNAP = null; }
+}
+
+
+window.addEventListener('beforeunload', function (e) {
+  if(!kalHasUnsaved()) return;
+  /* 关页面时**同步兜底存一次**草稿：平时的自动保存走的是 1.2s 防抖，
+     用户改完立刻关（不到 1.2s）那一次就会漏掉。LocalStorage 是同步 API，这里来得及。
+     ⚠️ 这也是唯一能覆盖"没走 draw() 的改动"的兜底 —— 见 draw() 末尾那句的说明。 */
+  if(draftTimer){ clearTimeout(draftTimer); draftTimer = null; }
+  draftSave();
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+/* 供站内页查询：ComposerView 的 iframe 里跑的就是本文件，外层页面要问「里面有没有没存的」。
+   ⚠️ 只有同源才拿得到；不同源时这个函数是 undefined，调用方必须兜底。 */
+window.__kalimbaHasUnsaved = function(){ return kalHasUnsaved(); };
+
 function exportJson(){
   if(!ST.grid) return;
   const g = ST.grid, t = ST.tuning, opt = exportOpts();
@@ -224,6 +324,10 @@ function exportJson(){
   const name = baseName() + '.json';
   dl(new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}), name);
   noteExported('JSON（' + name + '）');
+  /* 导出 = 这份内容已经落到磁盘 ⇒ 更新基准，关页面时不再提示；草稿也一并清掉
+     （它存在的意义就是"还没存到文件里的东西"，既然存了就没用了） */
+  kalMarkSaved();
+  draftClear();
 }
 
 /* ---------- JSON 导入：与顶栏「导出 json」构成闭环（2026-10-16） ----------
@@ -518,6 +622,9 @@ function applyImported(parsed, msgEl){
     tempoNote(parsed) +
     (parsed.note ? '（' + parsed.note + '）' : '') +
     (ST.grid.warnList.length ? '（' + ST.grid.warnList.length + ' 种音超出音域，点「⤢ 移调」调整）' : '');
+  /* 导入 = 打开了一份文件 ⇒ 此刻的内容是基准（之后再改才算"未保存"） */
+  kalMarkSaved();
+  draftScheduleSave();               // 导入的内容也要能扛住刷新
 }
 
 /* 导入提示里的速度说明：把「速度是怎么来的」讲清楚，并在读不到时指出补救入口。
@@ -983,6 +1090,9 @@ function init(){
     applyImported(parsed);
   });
 
+  /* 「简谱输入」打字 ⇒ 攒一次自动保存（防抖在 draftScheduleSave 里） */
+  $('src').addEventListener('input', () => draftScheduleSave());
+
   window.addEventListener('keydown', e => {
     if(e.code === 'Space' && !/TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName)){
       e.preventDefault(); play();
@@ -992,11 +1102,39 @@ function init(){
   /* 窗口一变，预览区高度与滚动条都在变 → 进度条要重新贴边 */
   window.addEventListener('resize', () => syncProg(true));
 
+  /* ---------- 恢复上次的草稿（2026-11-08）----------
+     顺序很重要：
+       ① `draftRestore()` 只摆好**文本与界面选项**（琴型/读法/方向/移调/格宽）；
+       ② 下面这次 `rebuild()` 从文本生成网格 —— 派生字段（beatInMeasure / measure /
+          isBarStart）都是这一步算出来的，所以不能跳过；
+       ③ 再把草稿里的 rows **逐行覆盖**回去 —— 手动点选编辑只存在网格里、不在文本里，
+          不覆盖就等于把用户的手工修改扔了。
+     ⚠️ 覆盖后必须走 `afterEdit()`：它负责重算 usedCols / warnList 并重绘。
+     ⚠️ 「已恢复」提示要加在 `afterEdit()` **之后** —— 它会调 report() 刷新 #stat。 */
+  var draft = draftRestore();
   rebuild();
+  if(draft){
+    var restoredRows = 0;
+    ST.grid.rows.forEach(function(r, i){
+      var d = draft.rows[i];
+      if(!d) return;
+      r.rest = !!d.rest;
+      r.items = d.items;
+      restoredRows++;
+    });
+    if(restoredRows) afterEdit();
+    var lenMismatch = draft.rows.length !== ST.grid.rows.length;
+    $('stat').textContent += ' · 已恢复上次编辑（' +
+      (lenMismatch ? '行数有变化，按行覆盖了 ' + restoredRows + ' 行' : '含手动编辑') + '）';
+  }
   syncEditUI();          // 初始为「未编辑」：时值按钮整组灰掉、不可点
+  /* 首屏载入完成 ⇒ 记下「未保存提醒」的基准，此后任何改动都会在关页面时被拦下。
+     ⚠️ 必须写在 init() **内部**：`extract_kernel.js` 有个补丁 P1 要求源码**以 `init();` 结尾**
+        （它要把这个调用从提取出的模块里移走）。把这行放到 init() 后面，产物链第一步会直接报错。 */
+  kalMarkSaved();
 }
 /* ★ P1：顶层 `init();` 已移出本模块（见离线产物末尾的显式 init() 调用）。
    否则任何 import 到本模块的代码（例如只用 renderer 的调用方）都会在加载时就去摸工作台 DOM。 */
 
 /* ─────────────── 本模块对外出口 ─────────────── */
-export { SAMPLE, SAMPLE_XML, SVG_CH_ADD, SVG_CH_DEL, applyAttach, applyImported, applyMetaOpts, applyMidiChannels, attachFillTitle, attachTimer, autoFit, closeExportDlg, currentTuning, exportJson, exportOpts, exportPng, guardRebuild, handleJsonFile, handleMidiFile, handleXmlFile, importJsonText, inflateRaw, init, jsonNote, midiChNameCount, midiChOptText, midiChOptionsHTML, midiChSelEls, midiChTaken, midiChsPicked, onBpmInput, openExportDlg, pngName, populateMidiChannels, printScore, rebuild, redrawForAttach, refreshMidiChOptions, renderMidiChRows, seg, segSet, setMetaLine, setPagedLayout, setTempo, syncBpm, syncEditUI, syncMidiChRows, syncMidiChSelTitles, toggleAttach, unzipMxl, zipName };
+export { DRAFT_KEY, DRAFT_MS, KAL_SNAP, SAMPLE, SAMPLE_XML, SVG_CH_ADD, SVG_CH_DEL, applyAttach, applyImported, applyMetaOpts, applyMidiChannels, attachFillTitle, attachTimer, autoFit, closeExportDlg, currentTuning, draftClear, draftRestore, draftTimer, exportJson, exportOpts, exportPng, guardRebuild, handleJsonFile, handleMidiFile, handleXmlFile, importJsonText, inflateRaw, init, jsonNote, kalMarkSaved, midiChNameCount, midiChOptText, midiChOptionsHTML, midiChSelEls, midiChTaken, midiChsPicked, onBpmInput, openExportDlg, pngName, populateMidiChannels, printScore, rebuild, redrawForAttach, refreshMidiChOptions, renderMidiChRows, seg, segSet, setMetaLine, setPagedLayout, setTempo, syncBpm, syncEditUI, syncMidiChRows, syncMidiChSelTitles, toggleAttach, unzipMxl, zipName };

@@ -11,6 +11,7 @@ import { nameOf } from './core.js';
 import { $, FILE_BAD } from './foundation.js';
 import { invalidatePlayback, onRedrawn, syncProg } from './player.js';
 import { AXIS_BAR_OFFSET, SHEET, axisBarSvg, esc, layoutRowCount, qrPathD, renderScore, rowsPerCol } from './renderer.js';
+import { DRAFT_KEY, DRAFT_MS, KAL_SNAP, draftTimer } from './studio.js';
 
 /* ─────────────── 以下为段内原文（逐字搬运） ─────────────── */
 
@@ -72,6 +73,7 @@ function afterEdit(){
   g.warnList = [...warned.entries()].map(([name, count]) => ({name, count}));
   invalidatePlayback();             // 音符变了，记忆的播放位置作废
   draw(); report();
+  draftScheduleSave();              // 手动编辑 ⇒ 攒一次自动保存
 }
 
 function dl(blob, name){
@@ -124,6 +126,14 @@ function draw(){
     ' 栏（' + sheetCount() + ' 张 A4，每张 ' + SHEET.COLS + ' 栏 × 每栏 ' +
     rowsPerCol() + ' 行）';
   $('stat').textContent = txt;
+  /* ★ 自动保存挂在这里，而不是每个入口逐个加：
+     点选编辑 / 改 BPM / 换琴型 / 移调 / 生成琴谱 / 导入，最后**都会走到 draw()**。
+     （2026-11-08 实测就漏过：只改 BPM 时草稿根本不写 —— 因为 setTempo 改的是
+       `ST.grid.meta.tempo`，不触发「简谱输入」的 input 事件，而当时保存只挂在那几个入口上。）
+     ⚠️ draw() 在 init() 里也会被调用，那时 KAL_SNAP 还是 null ⇒ kalHasUnsaved() 返回 false
+        ⇒ 不会把首屏样例谱误存成草稿。开销也不用担心：draftScheduleSave 只是 clearTimeout + setTimeout，
+        真正的快照计算在 1.2s 防抖之后才做一次。 */
+  draftScheduleSave();
 }
 
 function report(){
@@ -139,6 +149,11 @@ function report(){
   }
   box.innerHTML = msgs.join('<br>');
   box.classList.toggle('on', msgs.length > 0);
+}
+
+function draftScheduleSave(){
+  if(draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(function(){ draftTimer = null; draftSave(); }, DRAFT_MS);
 }
 
 function scoreTitle(){
@@ -174,6 +189,22 @@ function attachAfterDraw(){
   attachQR();
 }
 
+function draftSave(){
+  try {
+    /* ⚠️ 只有**真的改过**才写草稿。不加这道守卫会有两个坏结果：
+       ① 只打开看一眼（或草稿损坏被丢弃后重新载入）也会被存成草稿，
+          下次进来自动"恢复"一份原样的样例谱，还提示"已恢复上次编辑" —— 纯属误导；
+       ② `draftRestore` 里清掉坏数据后，紧接着 rebuild() 的自动保存又把垃圾位填上，
+          "坏草稿被清除"这件事等于没发生。
+       复用 kalHasUnsaved() 的判据（快照比对），与 beforeunload 完全同源。
+       ⚠️ init() 过程中 KAL_SNAP 还是 null ⇒ 它返回 false ⇒ 首屏 rebuild 不会写草稿。 */
+    if(!kalHasUnsaved()) return;
+    var d = draftBuild();
+    if(!d) return;
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+  } catch(e){ /* 配额满 / 隐私模式 ⇒ 静默放弃 */ }
+}
+
 function attachQR(){
   const wrap = $('atQR'); if(!wrap) return;
   const box = $('qrBox'), url = $('qrUrl');
@@ -191,6 +222,40 @@ function attachQR(){
   wrap.classList.remove('on');
 }
 
+function kalHasUnsaved(){
+  if(KAL_SNAP === null) return false;      // 基准还没建立（初始化过程中）⇒ 一律不拦
+  if(!ST.grid) return false;               // 没有谱面 ⇒ 没有东西可丢
+  try { return kalSnapshot() !== KAL_SNAP; } catch(e){ return false; }
+}
+
+function draftBuild(){
+  if(!ST.grid) return null;
+  var g = ST.grid, m = g.meta || {};
+  return {
+    v: 1,
+    at: Date.now(),
+    src: $('src').value,
+    meta: {
+      title: m.title, keyName: m.keyName, tempo: m.tempo,
+      meter: (m.meter || []).slice(),
+      tuningKey: ST.tuningKey, mode: ST.st.mode,
+      direction: ST.st.direction, transpose: ST.transpose,
+      unitMode: ST.st.unitMode
+    },
+    /* 只存「谱面本身」：行号 + 休止 + 每格音符。
+       beatInMeasure / measure / isBarStart 都是**由行号推出来**的派生字段，
+       恢复时由 rebuild() 重新算好，存进来纯属冗余。 */
+    rows: g.rows.map(function(r){
+      return {
+        idx: r.idx, rest: !!r.rest,
+        items: r.items.map(function(it){
+          return { col: it.col, midi: it.midi, label: it.label, dur: it.dur, voice: it.voice || 0, bad: !!it.bad };
+        })
+      };
+    })
+  };
+}
+
 function qrSvg(text){
   const m = qrPathD(text);
   if(!m) return '';
@@ -200,5 +265,23 @@ function qrSvg(text){
          '<path d="' + m.d + '" fill="#1b1b19"/></svg>';
 }
 
+function kalSnapshot(){
+  if(!ST.grid) return '';
+  var g = ST.grid, m = g.meta || {};
+  var parts = [
+    $('src').value,
+    m.title, m.keyName, m.tempo, (m.meter || []).join('/'),
+    ST.tuningKey, ST.st.mode, ST.st.direction, ST.transpose,
+    g.unit, g.rowsPerMeasure, g.totalBeats, g.nMeasures
+  ];
+  /* 网格指纹：每行记「列号:音高:时值:声部」，休止行记 '0'（够区分，且不依赖派生字段）。 */
+  g.rows.forEach(function(r){
+    parts.push(r.rest ? '0' : r.items.map(function(it){
+      return it.col + ':' + it.midi + ':' + it.dur + ':' + (it.voice || 0);
+    }).join(','));
+  });
+  return parts.join('|');
+}
+
 /* ─────────────── 本模块对外出口 ─────────────── */
-export { ATTACH_IDS, ST, afterEdit, attachAfterDraw, attachLinkUrl, attachQR, attachSongTitle, attachTitleVal, attachVal, attachVals, baseName, dl, draw, lastExportNote, pagedCount, pagedLayout, qrSvg, renderAxisBar, report, scoreTitle, setLastExportNote, setPagedLayoutFlag, sheetCount };
+export { ATTACH_IDS, ST, afterEdit, attachAfterDraw, attachLinkUrl, attachQR, attachSongTitle, attachTitleVal, attachVal, attachVals, baseName, dl, draftBuild, draftSave, draftScheduleSave, draw, kalHasUnsaved, kalSnapshot, lastExportNote, pagedCount, pagedLayout, qrSvg, renderAxisBar, report, scoreTitle, setLastExportNote, setPagedLayoutFlag, sheetCount };
