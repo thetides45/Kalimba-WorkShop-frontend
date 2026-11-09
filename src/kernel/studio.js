@@ -281,6 +281,13 @@ window.addEventListener('beforeunload', function (e) {
      ⚠️ 这也是唯一能覆盖"没走 draw() 的改动"的兜底 —— 见 draw() 末尾那句的说明。 */
   if(draftTimer){ clearTimeout(draftTimer); draftTimer = null; }
   draftSave();
+  /* ⚠️ 被宿主如果**是 iframe 承载**时，这里**只存草稿、不拦截卸载**。
+     原因：关闭顶层页面时浏览器会把所有子框架都问一遍，这里一拦，社区页/帖子页就跟着弹
+     「可能有未保存的更改」—— 而那一刻用户根本没在编辑（甚至是只读的谱面预览）。
+     拦截交给宿主那层：站内制谱页由 ComposerView 反过来问 __kalimbaHasUnsaved()；
+     帖子预览本来就不该拦。
+     独立打开（双击 index.html）、PWA 离线兜底（composer.html 当顶层文档）时 self === top，照常拦。 */
+  if(window.self !== window.top) return;
   e.preventDefault();
   e.returnValue = '';
 });
@@ -288,6 +295,14 @@ window.addEventListener('beforeunload', function (e) {
 /* 供站内页查询：ComposerView 的 iframe 里跑的就是本文件，外层页面要问「里面有没有没存的」。
    ⚠️ 只有同源才拿得到；不同源时这个函数是 undefined，调用方必须兜底。 */
 window.__kalimbaHasUnsaved = function(){ return kalHasUnsaved(); };
+
+/* 供**只读预览类宿主**重置基准（`ScorePreview` 用）。
+   它把帖子里的谱 feed 进内核（设 #src + 点 btnParse），网格必然与 init 时那份（样例/草稿）不同
+   ⇒ kalHasUnsaved() 会一直是 true。预览是展示、不是编辑，装配完就该把基准挪到当前这份谱上，
+   否则会有两个后果：①关顶层页面时被这个 iframe 拦下（社区页跟着弹）；
+   ②draftSave 的 `if(!kalHasUnsaved()) return` 守卫失效，可能把**别人的谱**写进用户的本地草稿。
+   ⚠️ 站内制谱页（ComposerView）**不要**调它 —— 那里就是编辑态，基准必须留在「上次保存」那一刻。 */
+window.__kalimbaMarkSaved = function(){ kalMarkSaved(); };
 
 function exportJson(){
   if(!ST.grid) return;
